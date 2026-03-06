@@ -23,6 +23,7 @@
       --text: #f0ede8;
       --text-dim: rgba(240,237,232,0.5);
       --active-country: #D4AF37;
+      --heritage-country: #8a8a9a;
       --inactive-country: #1a1a22;
     }
 
@@ -135,6 +136,16 @@
     }
 
     .country.inactive { fill: var(--inactive-country); }
+
+    .country.heritage {
+      fill: var(--heritage-country);
+      cursor: pointer;
+      filter: drop-shadow(0 0 4px rgba(138,138,154,0.4));
+    }
+    .country.heritage:hover, .country.heritage:active {
+      fill: #b0b0c4;
+      filter: drop-shadow(0 0 10px rgba(176,176,196,0.7));
+    }
 
     .country.active {
       fill: var(--active-country);
@@ -484,9 +495,11 @@ const { createClient } = supabase
 const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 // ── State ──
-let playersByCountry = {}  // { 'CD': [...players] }
+let playersByCountry = {}  // { 'CD': [...players] } — primary nationality
+let heritageByCountry = {} // { 'DE': [...players] } — heritage (2nd nationality) only
 let subscribersByCountry = {} // { 'CD': 17 }
-let activeCountries = new Set()
+let activeCountries = new Set()    // primary nationality countries
+let heritageCountries = new Set()  // 2nd nationality countries not already primary
 let geoData = null
 
 // ── Country name → ISO2 code mapping (for D3 geo names) ──
@@ -540,7 +553,7 @@ function getFlag(code) {
 async function loadData() {
   const { data: players } = await db
     .from('profiles')
-    .select('id, full_name, position, nationality, nationality_code, avatar_url, bio, highlight_url, is_public')
+    .select('id, full_name, position, nationality, nationality_code, nationality_code2, avatar_url, bio, highlight_url, is_public')
     .eq('is_active', true)
     .eq('role', 'player')
     .eq('is_public', true)
@@ -552,6 +565,14 @@ async function loadData() {
       if (!playersByCountry[code]) playersByCountry[code] = []
       playersByCountry[code].push(p)
       activeCountries.add(code)
+    }
+    // Second nationality — heritage
+    for (const p of players) {
+      const code2 = p.nationality_code2?.toUpperCase()
+      if (!code2) continue
+      if (!heritageByCountry[code2]) heritageByCountry[code2] = []
+      heritageByCountry[code2].push(p)
+      if (!activeCountries.has(code2)) heritageCountries.add(code2)
     }
     document.getElementById('stat-players').textContent = players.length
     document.getElementById('stat-nations').textContent = activeCountries.size
@@ -629,20 +650,26 @@ async function buildMap() {
     .join('path')
     .attr('class', d => {
       const alpha2 = numToAlpha2[String(d.id).padStart(3, '0')] || ''
-      return `country ${activeCountries.has(alpha2) ? 'active' : 'inactive'}`
+      if (activeCountries.has(alpha2)) return 'country active'
+      if (heritageCountries.has(alpha2)) return 'country heritage'
+      return 'country inactive'
     })
     .attr('d', path)
     .on('mousemove', function(event, d) {
       const alpha2 = numToAlpha2[String(d.id).padStart(3, '0')] || ''
-      if (!activeCountries.has(alpha2)) return
+      const isActive = activeCountries.has(alpha2)
+      const isHeritage = heritageCountries.has(alpha2)
+      if (!isActive && !isHeritage) return
 
       const players = playersByCountry[alpha2] || []
+      const heritage = heritageByCountry[alpha2] || []
       const subs = subscribersByCountry[alpha2] || 0
-      const countryName = players[0]?.nationality || alpha2
+      const countryName = players[0]?.nationality || heritage[0]?.nationality || alpha2
+      const totalPlayers = players.length + (isHeritage ? heritage.length : 0)
 
       document.getElementById('tt-country').textContent = countryName
       document.getElementById('tt-stats').innerHTML =
-        `<span>${players.length}</span> player${players.length !== 1 ? 's' : ''} · <span>${subs}</span> followers`
+        `<span>${totalPlayers}</span> player${totalPlayers !== 1 ? 's' : ''} · <span>${subs}</span> followers`
 
       tooltip.classList.add('visible')
       tooltip.style.left = (event.clientX + 14) + 'px'
@@ -650,12 +677,12 @@ async function buildMap() {
     })
     .on('mouseleave', function(event, d) {
       const alpha2 = numToAlpha2[String(d.id).padStart(3, '0')] || ''
-      if (!activeCountries.has(alpha2)) return
+      if (!activeCountries.has(alpha2) && !heritageCountries.has(alpha2)) return
       tooltip.classList.remove('visible')
     })
     .on('click', function(event, d) {
       const alpha2 = numToAlpha2[String(d.id).padStart(3, '0')] || ''
-      if (!activeCountries.has(alpha2)) return
+      if (!activeCountries.has(alpha2) && !heritageCountries.has(alpha2)) return
       tooltip.classList.remove('visible')
       openPanel(alpha2)
     })
@@ -673,30 +700,28 @@ async function buildMap() {
 // ── Side panel ──
 function openPanel(countryCode) {
   const players = playersByCountry[countryCode] || []
+  const heritage = heritageByCountry[countryCode] || []
   const subs = subscribersByCountry[countryCode] || 0
-  const countryName = players[0]?.nationality || countryCode
+  const countryName = players[0]?.nationality || heritage[0]?.nationality || countryCode
   const flag = getFlag(countryCode)
 
   document.getElementById('panel-flag').textContent = flag
   document.getElementById('panel-country').textContent = countryName
-  document.getElementById('panel-player-count').textContent = players.length
+  document.getElementById('panel-player-count').textContent = players.length + heritage.length
   document.getElementById('panel-sub-count').textContent = subs
 
   const body = document.getElementById('panel-body')
   body.innerHTML = ''
 
-  if (players.length > 0) {
-    const title = document.createElement('div')
-    title.className = 'panel-section-title'
-    title.textContent = 'Players'
-    body.appendChild(title)
-
-    for (const p of players) {
+  function renderPlayers(list, isHeritage) {
+    for (const p of list) {
       const card = document.createElement('div')
       card.className = 'player-card'
+      card.style.borderColor = isHeritage ? 'rgba(176,176,196,0.5)' : 'rgba(212,175,55,0.3)'
 
       const avatar = document.createElement('div')
       avatar.className = 'player-avatar'
+      avatar.style.borderColor = isHeritage ? '#b0b0c4' : '#D4AF37'
       if (p.avatar_url) {
         const img = document.createElement('img')
         img.src = p.avatar_url
@@ -705,6 +730,7 @@ function openPanel(countryCode) {
       } else {
         const init = document.createElement('div')
         init.className = 'player-initial'
+        init.style.color = isHeritage ? '#b0b0c4' : 'var(--gold)'
         init.textContent = p.full_name.charAt(0)
         avatar.appendChild(init)
       }
@@ -719,6 +745,10 @@ function openPanel(countryCode) {
       const pos = document.createElement('div')
       pos.className = 'player-position'
       pos.textContent = `${flag} ${p.position || 'Player'}`
+      if (isHeritage) {
+        pos.style.color = '#b0b0c4'
+        pos.title = 'Heritage nationality'
+      }
 
       info.appendChild(name)
       info.appendChild(pos)
@@ -744,6 +774,23 @@ function openPanel(countryCode) {
       card.appendChild(info)
       body.appendChild(card)
     }
+  }
+
+  if (players.length > 0) {
+    const title = document.createElement('div')
+    title.className = 'panel-section-title'
+    title.textContent = 'Players'
+    body.appendChild(title)
+    renderPlayers(players, false)
+  }
+
+  if (heritage.length > 0) {
+    const title = document.createElement('div')
+    title.className = 'panel-section-title'
+    title.style.color = '#b0b0c4'
+    title.textContent = 'Heritage'
+    body.appendChild(title)
+    renderPlayers(heritage, true)
   }
 
   // Subscribers section
