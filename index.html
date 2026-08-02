@@ -556,11 +556,8 @@ function getFlag(code) {
 // ── Load data ──
 async function loadData() {
   const { data: players } = await db
-    .from('profiles')
-    .select('id, full_name, position, nationality, nationality_code, nationality_code2, avatar_url, bio, highlight_url, is_public')
-    .eq('is_active', true)
-    .eq('role', 'player')
-    .eq('is_public', true)
+    .from('public_player_profiles')
+    .select('id, full_name, position, nationality, nationality_code, nationality_code2, avatar_url, bio, highlight_url, member_status')
 
   if (players) {
     for (const p of players) {
