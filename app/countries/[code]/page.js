@@ -3,6 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getPublicSupabase } from "../../../lib/supabasePublic";
 
+export const dynamic = "force-dynamic";
+
 const ACTIVE_POOLS = ["competitive", "training"];
 
 function normalize(code) {
@@ -11,11 +13,22 @@ function normalize(code) {
     : "";
 }
 
+function slugify(name) {
+  return (name || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 function countryName(code) {
   try {
-    return new Intl.DisplayNames(["en"], {
-      type: "region",
-    }).of(code) || code;
+    return (
+      new Intl.DisplayNames(["en"], {
+        type: "region",
+      }).of(code) || code
+    );
   } catch {
     return code;
   }
@@ -25,37 +38,72 @@ async function getCountryData(code) {
   const { data, error } = await getPublicSupabase()
     .from("public_player_profiles")
     .select(
-      "full_name, position, bio, player_pool, nationality_code, nationality_code2"
+      "id, full_name, position, bio, player_pool, nationality_code, nationality_code2"
     );
 
   if (error) {
-    throw new Error(error.message);
+    throw new Error(`Country lookup failed: ${error.message}`);
   }
 
-  const countryPlayers = (data || []).filter(
+  const allPlayers = data || [];
+
+  const activePlayers = allPlayers.filter((player) =>
+    ACTIVE_POOLS.includes(player.player_pool)
+  );
+
+  // Prevent incorrect links if two players share a name.
+  const slugCounts = new Map();
+
+  for (const player of activePlayers) {
+    const slug = slugify(player.full_name);
+
+    if (slug) {
+      slugCounts.set(slug, (slugCounts.get(slug) || 0) + 1);
+    }
+  }
+
+  const countryPlayers = allPlayers.filter(
     (player) =>
       normalize(player.nationality_code) === code ||
       normalize(player.nationality_code2) === code
   );
 
-  const active = countryPlayers.filter(
-    (player) => ACTIVE_POOLS.includes(player.player_pool)
+  const primary = countryPlayers.filter(
+    (player) =>
+      ACTIVE_POOLS.includes(player.player_pool) &&
+      normalize(player.nationality_code) === code
+  );
+
+  const secondary = countryPlayers.filter(
+    (player) =>
+      ACTIVE_POOLS.includes(player.player_pool) &&
+      normalize(player.nationality_code2) === code &&
+      normalize(player.nationality_code) !== code
   );
 
   const historical = countryPlayers.filter(
     (player) => player.player_pool === "legacy"
   );
 
-  return { active, historical };
+  return { primary, secondary, historical, slugCounts };
 }
 
 export async function generateMetadata({ params }) {
-  const { code } = await params;
-  const country = countryName(code.toUpperCase());
+  const { code: rawCode } = await params;
+  const code = rawCode.toUpperCase();
+
+  if (!/^[A-Z]{2}$/.test(code)) {
+    return {
+      title: "Country Not Found | TBD FC",
+      robots: { index: false },
+    };
+  }
+
+  const country = countryName(code);
 
   return {
     title: `${country} | TBD FC Internationals`,
-    description: `Explore players representing ${country} at TBD FC Internationals, an amateur soccer club in Madison, Wisconsin.`,
+    description: `Explore current and former TBD FC players representing ${country}, part of an international amateur soccer club in Madison, Wisconsin.`,
   };
 }
 
@@ -67,28 +115,38 @@ export default async function CountryPage({ params }) {
     notFound();
   }
 
-  const { active, historical } = await getCountryData(code);
+  const {
+    primary,
+    secondary,
+    historical,
+    slugCounts,
+  } = await getCountryData(code);
 
-  if (active.length === 0 && historical.length === 0) {
+  if (
+    primary.length === 0 &&
+    secondary.length === 0 &&
+    historical.length === 0
+  ) {
     notFound();
   }
 
   const country = countryName(code);
 
-  const primary = active.filter(
-    (player) => normalize(player.nationality_code) === code
-  );
+  function renderPlayerCard(player) {
+    const slug = slugify(player.full_name);
+    const hasProfile =
+      slug && slugCounts.get(slug) === 1;
 
-  const secondary = active.filter(
-    (player) =>
-      normalize(player.nationality_code2) === code &&
-      normalize(player.nationality_code) !== code
-  );
+    const nameStyle = {
+      color: "#D4AF37",
+      fontSize: "18px",
+      fontWeight: "bold",
+      textDecoration: "none",
+    };
 
-  function renderPlayers(list) {
-    return list.map((player, index) => (
+    return (
       <article
-        key={`${player.full_name}-${index}`}
+        key={player.id}
         style={{
           padding: "18px",
           background: "#16161c",
@@ -97,11 +155,27 @@ export default async function CountryPage({ params }) {
           marginBottom: "12px",
         }}
       >
-        <h3 style={{ fontSize: "18px", marginBottom: "5px" }}>
-          {player.full_name}
+        <h3 style={{ marginBottom: "6px" }}>
+          {hasProfile ? (
+            <Link
+              href={`/players/${slug}`}
+              style={nameStyle}
+            >
+              {player.full_name}
+            </Link>
+          ) : (
+            <span style={nameStyle}>
+              {player.full_name}
+            </span>
+          )}
         </h3>
 
-        <p style={{ color: "#b0b0c4", fontSize: "14px" }}>
+        <p
+          style={{
+            color: "#b0b0c4",
+            fontSize: "14px",
+          }}
+        >
           {player.position || "Player"}
         </p>
 
@@ -112,13 +186,29 @@ export default async function CountryPage({ params }) {
               fontSize: "14px",
               lineHeight: "1.6",
               color: "#d0ccd0",
+              whiteSpace: "pre-line",
             }}
           >
             {player.bio}
           </p>
         )}
+
+        {hasProfile && (
+          <Link
+            href={`/players/${slug}`}
+            style={{
+              display: "inline-block",
+              marginTop: "14px",
+              color: "#D4AF37",
+              fontSize: "13px",
+              textDecoration: "underline",
+            }}
+          >
+            View Player Profile →
+          </Link>
+        )}
       </article>
-    ));
+    );
   }
 
   return (
@@ -140,7 +230,12 @@ export default async function CountryPage({ params }) {
         }
       `}</style>
 
-      <div style={{ maxWidth: "800px", margin: "0 auto" }}>
+      <div
+        style={{
+          maxWidth: "800px",
+          margin: "0 auto",
+        }}
+      >
         <nav style={{ marginBottom: "50px" }}>
           <Link
             href="/"
@@ -192,7 +287,8 @@ export default async function CountryPage({ params }) {
             <h2 style={{ marginBottom: "18px" }}>
               Current Players
             </h2>
-            {renderPlayers(primary)}
+
+            {primary.map(renderPlayerCard)}
           </section>
         )}
 
@@ -206,7 +302,8 @@ export default async function CountryPage({ params }) {
             >
               Secondary Nationality
             </h2>
-            {renderPlayers(secondary)}
+
+            {secondary.map(renderPlayerCard)}
           </section>
         )}
 
@@ -221,9 +318,9 @@ export default async function CountryPage({ params }) {
               Former Players
             </h2>
 
-            {historical.map((player, index) => (
+            {historical.map((player) => (
               <div
-                key={`${player.full_name}-${index}`}
+                key={player.id}
                 style={{
                   background: "#16161c",
                   border: "1px solid rgba(109,40,217,0.4)",
