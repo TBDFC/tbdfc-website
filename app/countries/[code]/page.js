@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getPublicSupabase } from "../../../lib/supabasePublic";
+import { mergeHistoricalPlayers } from "../../../lib/historicalPlayers";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,7 @@ function countryName(code) {
   }
 }
 
+// Load public SquadOps players and the historical registry.
 async function getCountryData(code) {
   const { data, error } = await getPublicSupabase()
     .from("public_player_profiles")
@@ -45,52 +47,61 @@ async function getCountryData(code) {
     throw new Error(`Country lookup failed: ${error.message}`);
   }
 
-  const allPlayers = data || [];
+  const publicPlayers = data || [];
 
-  const activePlayers = allPlayers.filter((player) =>
+  const activePlayers = publicPlayers.filter((player) =>
     ACTIVE_POOLS.includes(player.player_pool)
   );
 
-  // Prevent incorrect links if two players share a name.
+  const squadOpsLegacy = publicPlayers.filter(
+    (player) => player.player_pool === "legacy"
+  );
+
+  // Merge the additional historical players without duplicates.
+  const historicalPlayers = mergeHistoricalPlayers(
+    squadOpsLegacy
+  );
+
+  // Count name-based URLs to prevent ambiguous profile links.
   const slugCounts = new Map();
 
   for (const player of activePlayers) {
     const slug = slugify(player.full_name);
 
     if (slug) {
-      slugCounts.set(slug, (slugCounts.get(slug) || 0) + 1);
+      slugCounts.set(
+        slug,
+        (slugCounts.get(slug) || 0) + 1
+      );
     }
   }
 
-  const countryPlayers = allPlayers.filter(
+  // Current players with this country as primary nationality.
+  const primary = activePlayers.filter(
+    (player) => normalize(player.nationality_code) === code
+  );
+
+  // Current players with this country as secondary nationality.
+  const secondary = activePlayers.filter(
+    (player) =>
+      normalize(player.nationality_code2) === code &&
+      normalize(player.nationality_code) !== code
+  );
+
+  // Former players with either nationality matching this country.
+  const historical = historicalPlayers.filter(
     (player) =>
       normalize(player.nationality_code) === code ||
       normalize(player.nationality_code2) === code
   );
 
-  const primary = countryPlayers.filter(
-    (player) =>
-      ACTIVE_POOLS.includes(player.player_pool) &&
-      normalize(player.nationality_code) === code
-  );
-
-  const secondary = countryPlayers.filter(
-    (player) =>
-      ACTIVE_POOLS.includes(player.player_pool) &&
-      normalize(player.nationality_code2) === code &&
-      normalize(player.nationality_code) !== code
-  );
-
-  const historical = countryPlayers.filter(
-    (player) => player.player_pool === "legacy"
-  );
-
   return { primary, secondary, historical, slugCounts };
 }
 
+// Search engine page information.
 export async function generateMetadata({ params }) {
   const { code: rawCode } = await params;
-  const code = rawCode.toUpperCase();
+  const code = normalize(rawCode);
 
   if (!/^[A-Z]{2}$/.test(code)) {
     return {
@@ -103,13 +114,95 @@ export async function generateMetadata({ params }) {
 
   return {
     title: `${country} | TBD FC Internationals`,
-    description: `Explore current and former TBD FC players representing ${country}, part of an international amateur soccer club in Madison, Wisconsin.`,
+    description:
+      `Explore current and former TBD FC players representing ` +
+      `${country}, part of an international amateur soccer club ` +
+      `based in Madison, Wisconsin.`,
   };
+}
+
+// Current player card with a link to the public player profile.
+function PlayerCard({ player, slugCounts }) {
+  const slug = slugify(player.full_name);
+  const hasProfile = slug && slugCounts.get(slug) === 1;
+
+  return (
+    <article
+      style={{
+        padding: "18px",
+        background: "#16161c",
+        border: "1px solid rgba(212,175,55,0.2)",
+        borderRadius: "10px",
+        marginBottom: "12px",
+      }}
+    >
+      <h3
+        style={{
+          fontSize: "18px",
+          marginBottom: "6px",
+        }}
+      >
+        {hasProfile ? (
+          <Link
+            href={`/players/${slug}`}
+            style={{
+              color: "#D4AF37",
+              textDecoration: "none",
+            }}
+          >
+            {player.full_name}
+          </Link>
+        ) : (
+          <span style={{ color: "#D4AF37" }}>
+            {player.full_name}
+          </span>
+        )}
+      </h3>
+
+      <p
+        style={{
+          color: "#b0b0c4",
+          fontSize: "14px",
+        }}
+      >
+        {player.position || "Player"}
+      </p>
+
+      {player.bio && (
+        <p
+          style={{
+            marginTop: "10px",
+            fontSize: "14px",
+            lineHeight: "1.6",
+            color: "#d0ccd0",
+            whiteSpace: "pre-line",
+          }}
+        >
+          {player.bio}
+        </p>
+      )}
+
+      {hasProfile && (
+        <Link
+          href={`/players/${slug}`}
+          style={{
+            display: "inline-block",
+            marginTop: "14px",
+            color: "#D4AF37",
+            fontSize: "13px",
+            textDecoration: "underline",
+          }}
+        >
+          View Player Profile →
+        </Link>
+      )}
+    </article>
+  );
 }
 
 export default async function CountryPage({ params }) {
   const { code: rawCode } = await params;
-  const code = rawCode.toUpperCase();
+  const code = normalize(rawCode);
 
   if (!/^[A-Z]{2}$/.test(code)) {
     notFound();
@@ -131,85 +224,6 @@ export default async function CountryPage({ params }) {
   }
 
   const country = countryName(code);
-
-  function renderPlayerCard(player) {
-    const slug = slugify(player.full_name);
-    const hasProfile =
-      slug && slugCounts.get(slug) === 1;
-
-    const nameStyle = {
-      color: "#D4AF37",
-      fontSize: "18px",
-      fontWeight: "bold",
-      textDecoration: "none",
-    };
-
-    return (
-      <article
-        key={player.id}
-        style={{
-          padding: "18px",
-          background: "#16161c",
-          border: "1px solid rgba(212,175,55,0.2)",
-          borderRadius: "10px",
-          marginBottom: "12px",
-        }}
-      >
-        <h3 style={{ marginBottom: "6px" }}>
-          {hasProfile ? (
-            <Link
-              href={`/players/${slug}`}
-              style={nameStyle}
-            >
-              {player.full_name}
-            </Link>
-          ) : (
-            <span style={nameStyle}>
-              {player.full_name}
-            </span>
-          )}
-        </h3>
-
-        <p
-          style={{
-            color: "#b0b0c4",
-            fontSize: "14px",
-          }}
-        >
-          {player.position || "Player"}
-        </p>
-
-        {player.bio && (
-          <p
-            style={{
-              marginTop: "10px",
-              fontSize: "14px",
-              lineHeight: "1.6",
-              color: "#d0ccd0",
-              whiteSpace: "pre-line",
-            }}
-          >
-            {player.bio}
-          </p>
-        )}
-
-        {hasProfile && (
-          <Link
-            href={`/players/${slug}`}
-            style={{
-              display: "inline-block",
-              marginTop: "14px",
-              color: "#D4AF37",
-              fontSize: "13px",
-              textDecoration: "underline",
-            }}
-          >
-            View Player Profile →
-          </Link>
-        )}
-      </article>
-    );
-  }
 
   return (
     <main
@@ -288,7 +302,13 @@ export default async function CountryPage({ params }) {
               Current Players
             </h2>
 
-            {primary.map(renderPlayerCard)}
+            {primary.map((player) => (
+              <PlayerCard
+                key={player.id}
+                player={player}
+                slugCounts={slugCounts}
+              />
+            ))}
           </section>
         )}
 
@@ -303,7 +323,13 @@ export default async function CountryPage({ params }) {
               Secondary Nationality
             </h2>
 
-            {secondary.map(renderPlayerCard)}
+            {secondary.map((player) => (
+              <PlayerCard
+                key={player.id}
+                player={player}
+                slugCounts={slugCounts}
+              />
+            ))}
           </section>
         )}
 
@@ -318,20 +344,28 @@ export default async function CountryPage({ params }) {
               Former Players
             </h2>
 
-            {historical.map((player) => (
-              <div
-                key={player.id}
-                style={{
-                  background: "#16161c",
-                  border: "1px solid rgba(109,40,217,0.4)",
-                  borderRadius: "10px",
-                  padding: "14px 18px",
-                  marginBottom: "10px",
-                }}
-              >
-                {player.full_name}
-              </div>
-            ))}
+            {historical
+              .slice()
+              .sort((a, b) =>
+                (a.full_name || "").localeCompare(
+                  b.full_name || ""
+                )
+              )
+              .map((player, index) => (
+                <div
+                  key={player.id || `former-${index}`}
+                  style={{
+                    background: "#16161c",
+                    border:
+                      "1px solid rgba(109,40,217,0.4)",
+                    borderRadius: "10px",
+                    padding: "14px 18px",
+                    marginBottom: "10px",
+                  }}
+                >
+                  {player.full_name}
+                </div>
+              ))}
           </section>
         )}
       </div>

@@ -1,7 +1,9 @@
 
+
 import Link from "next/link";
 import WorldMap from "./WorldMap";
 import { getPublicSupabase } from "../lib/supabasePublic";
+import { mergeHistoricalPlayers } from "../lib/historicalPlayers";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +16,7 @@ function normalize(code) {
 }
 
 export default async function HomePage() {
-  // Load approved public SquadOps profiles.
+  // Load public player information from SquadOps.
   const { data, error } = await getPublicSupabase()
     .from("public_player_profiles")
     .select(
@@ -22,21 +24,30 @@ export default async function HomePage() {
     );
 
   if (error) {
-    throw new Error(`Unable to load players: ${error.message}`);
+    throw new Error(
+      `Unable to load players: ${error.message}`
+    );
   }
 
   const publicPlayers = data || [];
 
-  // Separate active and historical players.
+  // Current players are from Competitive and Training.
   const activePlayers = publicPlayers.filter((player) =>
     ACTIVE_POOLS.includes(player.player_pool)
   );
 
-  const legacyPlayers = publicPlayers.filter(
+  // Retrieve existing SquadOps Legacy players.
+  const squadOpsLegacy = publicPlayers.filter(
     (player) => player.player_pool === "legacy"
   );
 
-  // Count current nations.
+  // Add the historical registry and prevent duplicates.
+  const legacyPlayers = mergeHistoricalPlayers(
+    squadOpsLegacy
+  );
+
+  // Count current nations only.
+  // Historical players do not affect this number.
   const activeNations = new Set();
 
   for (const player of activePlayers) {
@@ -52,7 +63,7 @@ export default async function HomePage() {
     }
   }
 
-  // Build the country directory from active and Legacy players.
+  // Build the directory from current and historical players.
   const allCountries = new Set();
 
   for (const player of [...activePlayers, ...legacyPlayers]) {
@@ -99,7 +110,10 @@ export default async function HomePage() {
 
         <div className="header-right">
           <div className="header-stat">
-            <div className="header-stat-num" id="stat-players">
+            <div
+              className="header-stat-num"
+              id="stat-players"
+            >
               {activePlayers.length}
             </div>
             <div className="header-stat-label">
@@ -110,7 +124,10 @@ export default async function HomePage() {
           <div className="header-divider"></div>
 
           <div className="header-stat">
-            <div className="header-stat-num" id="stat-nations">
+            <div
+              className="header-stat-num"
+              id="stat-nations"
+            >
               {activeNations.size}
             </div>
             <div className="header-stat-label">
@@ -121,7 +138,10 @@ export default async function HomePage() {
           <div className="header-divider"></div>
 
           <div className="header-stat">
-            <div className="header-stat-num" id="stat-subscribers">
+            <div
+              className="header-stat-num"
+              id="stat-subscribers"
+            >
               0
             </div>
             <div className="header-stat-label">
@@ -131,7 +151,7 @@ export default async function HomePage() {
         </div>
       </header>
 
-      {/* INTERACTIVE MAP */}
+      {/* INTERACTIVE WORLD MAP */}
       <div id="map-wrap">
         <WorldMap
           players={activePlayers}
@@ -139,17 +159,27 @@ export default async function HomePage() {
         />
       </div>
 
-      {/* TOOLTIP */}
+      {/* COUNTRY TOOLTIP */}
       <div id="tooltip">
-        <div className="tooltip-country" id="tt-country"></div>
-        <div className="tooltip-stats" id="tt-stats"></div>
+        <div
+          className="tooltip-country"
+          id="tt-country"
+        ></div>
+
+        <div
+          className="tooltip-stats"
+          id="tt-stats"
+        ></div>
       </div>
 
       {/* COUNTRY PANEL */}
       <div id="side-panel">
         <div className="panel-header">
           <div className="panel-header-left">
-            <div className="panel-flag" id="panel-flag"></div>
+            <div
+              className="panel-flag"
+              id="panel-flag"
+            ></div>
 
             <div
               className="panel-country-name"
@@ -195,7 +225,10 @@ export default async function HomePage() {
           </button>
         </div>
 
-        <div className="panel-body" id="panel-body"></div>
+        <div
+          className="panel-body"
+          id="panel-body"
+        ></div>
       </div>
 
       {/* MAP INSTRUCTIONS */}
@@ -203,7 +236,7 @@ export default async function HomePage() {
         Tap a glowing country to see players
       </div>
 
-      {/* SEARCHABLE COUNTRY DIRECTORY */}
+      {/* COUNTRY DIRECTORY */}
       <nav
         aria-label="Country directory"
         style={{
@@ -302,3 +335,4 @@ export default async function HomePage() {
     </>
   );
 }
+
